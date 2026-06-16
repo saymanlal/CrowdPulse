@@ -1,11 +1,3 @@
-/**
- * CrowdPulse Backend v2.3
- * - Accepts flat SAYMAN tx body on /api/broadcast (no { transaction, publicKey } wrapper)
- * - validateTx checks flat format: { type, timestamp, data, signature, publicKey, gasLimit, gasPrice, nonce }
- * - signature is { r, s } object (matches wallet.js and transaction.js isValid)
- * - Safe RPC with HTML detection + state fallback for /call endpoint
- */
-
 import 'dotenv/config';
 import express   from 'express';
 import cors      from 'cors';
@@ -19,7 +11,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app       = express();
 const isProd    = process.env.NODE_ENV === 'production';
 
-// ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] }));
 app.use(express.json({ limit: '512kb' }));
@@ -29,7 +20,6 @@ app.use('/api/', rateLimit({
   message: { error: 'Rate limit exceeded.' },
 }));
 
-// ─── Config ───────────────────────────────────────────────────────────────────
 const SAYMAN_RPC = process.env.SAYMAN_RPC || 'https://sayman.onrender.com';
 const PORT       = process.env.PORT       || 3001;
 
@@ -52,7 +42,7 @@ fs.watchFile(manifestPath, { interval: 3000 }, reloadContracts);
 async function safeJson(res, url) {
   const text = await res.text();
   if (text.trimStart().startsWith('<'))
-    throw new Error(`SAYMAN returned HTML at ${url} (${res.status}) — endpoint missing`);
+    throw new Error(`SAYMAN returned HTML at ${url} (${res.status})`);
   try { return JSON.parse(text); }
   catch { throw new Error(`SAYMAN non-JSON at ${url}: ${text.slice(0, 120)}`); }
 }
@@ -81,47 +71,62 @@ async function rpc(endpoint, method = 'GET', body = null, retries = 2) {
   }
 }
 
-// ─── Contract call with state fallback ───────────────────────────────────────
-async function callContract(address, method, args = {}) {
-  if (!address) throw new Error(`Contract address not set for ${method}`);
+// ─── Block scanner — extracts REPORT_CREATE txs from recent blocks ────────────
+// Cache so we don't re-fetch blocks we already have
+const reportCache = { reports: [], lastBlock: 0, updatedAt: 0 };
+const CACHE_TTL   = 15_000; // 15s
+
+async function scanReports() {
+  const now = Date.now();
+  if (now - reportCache.updatedAt < CACHE_TTL) return reportCache.reports;
 
   try {
-    return await rpc(`/api/contracts/${address}/call`, 'POST', { method, args });
-  } catch (callErr) {
-    if (!isProd) console.warn(`⚠  callContract(${method}) /call failed: ${callErr.message} — trying /state`);
+    const stats      = await rpc('/api/stats');
+    const latest     = stats.blocks || 0;
+    const scanFrom   = Math.max(1, reportCache.lastBlock + 1);
+    const scanTo     = latest;
+    const newReports = [];
+
+    // Scan up to 50 new blocks per refresh to avoid hammering the RPC
+    const limit = Math.min(scanTo - scanFrom + 1, 50);
+    const start = Math.max(scanFrom, scanTo - limit + 1);
+
+    for (let i = start; i <= scanTo; i++) {
+      try {
+        const block = await rpc(`/api/blocks/${i}`);
+        const txs   = block.transactions || block.data?.transactions || [];
+        for (const tx of txs) {
+          if (tx.type === 'REPORT_CREATE' && tx.data) {
+            newReports.push({
+              id:          tx.id,
+              reporter:    tx.data.from,
+              category:    tx.data.category   || 'OTHER',
+              description: tx.data.description || '',
+              location:    tx.data.location   || '',
+              severity:    tx.data.severity   || 'MEDIUM',
+              status:      'OPEN',
+              createdAt:   tx.timestamp,
+              blockIndex:  block.index ?? block.height ?? i,
+              txId:        tx.id,
+            });
+          }
+        }
+      } catch {}
+    }
+
+    // Merge new with existing, dedupe by id, sort newest first
+    const all     = [...reportCache.reports, ...newReports];
+    const deduped = Object.values(Object.fromEntries(all.map(r => [r.id, r])));
+    deduped.sort((a, b) => b.createdAt - a.createdAt);
+
+    reportCache.reports   = deduped;
+    reportCache.lastBlock = scanTo;
+    reportCache.updatedAt = now;
+  } catch (e) {
+    if (!isProd) console.warn('scanReports error:', e.message);
   }
 
-  const raw   = await rpc(`/api/contracts/${address}/state`);
-  const state = raw.state || raw || {};
-
-  switch (method) {
-    case 'getReports': {
-      let reports = Object.values(state.reports || {});
-      if (args.category) reports = reports.filter(r => r.category === args.category);
-      if (args.status)   reports = reports.filter(r => r.status   === args.status);
-      if (args.reporter) reports = reports.filter(r => r.reporter === args.reporter);
-      reports.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-      const page     = args.page     || 1;
-      const pageSize = args.pageSize || 20;
-      const start    = (page - 1) * pageSize;
-      return { reports: reports.slice(start, start + pageSize), total: reports.length };
-    }
-    case 'getReport':
-      return state.reports?.[args.reportId] || null;
-    case 'getScore':
-      return { score: state.scores?.[args.address] || 0, level: state.levels?.[args.address] || 'Newcomer' };
-    case 'getLeaderboard': {
-      const entries = Object.entries(state.scores || {})
-        .map(([addr, score]) => ({ address: addr, score }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, args.limit || 20);
-      return { leaderboard: entries };
-    }
-    case 'getPoints':
-      return { points: state.points?.[args.address] || 0 };
-    default:
-      throw new Error(`No state fallback for method: ${method}`);
-  }
+  return reportCache.reports;
 }
 
 // ─── AI classifier ────────────────────────────────────────────────────────────
@@ -140,29 +145,24 @@ function aiVerify(description = '', category = '') {
   let detected = category || 'OTHER';
   let conf     = 65 + Math.floor(Math.random() * 15);
   for (const [cat, kws] of Object.entries(KEYWORDS)) {
-    if (kws.some(k => text.includes(k))) {
-      detected = cat;
-      conf     = 82 + Math.floor(Math.random() * 13);
-      break;
-    }
+    if (kws.some(k => text.includes(k))) { detected = cat; conf = 82 + Math.floor(Math.random() * 13); break; }
   }
   return { aiCategory: detected, confidence: conf, isValid: conf > 60, isDuplicate: false };
 }
 
-// ─── Tx validator (flat SAYMAN format) ───────────────────────────────────────
+// ─── Tx validator ─────────────────────────────────────────────────────────────
 function validateTx(tx) {
   const required = ['type', 'timestamp', 'data', 'signature', 'publicKey', 'gasLimit', 'gasPrice', 'nonce'];
   for (const f of required) {
     if (tx[f] === undefined || tx[f] === null)
       throw new Error(`Transaction missing field: ${f}`);
   }
-  // signature is { r, s } object
   if (typeof tx.signature !== 'object' || !tx.signature.r || !tx.signature.s)
-    throw new Error('Invalid signature — expected { r, s } object');
+    throw new Error('Invalid signature — expected { r, s }');
   if (typeof tx.nonce !== 'number')
     throw new Error('nonce must be a number');
   if (!tx.data?.from)
-    throw new Error('tx.data.from (sender address) required');
+    throw new Error('tx.data.from required');
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
@@ -203,17 +203,13 @@ app.post('/api/broadcast', async (req, res) => {
   try {
     const tx = req.body;
     if (!tx?.type) return res.status(400).json({ error: 'tx body with type required' });
-
     validateTx(tx);
-
-    // Forward flat tx to SAYMAN exactly as-is
     const result = await rpc('/api/broadcast', 'POST', tx);
-
+    // Invalidate report cache so next feed load rescans
+    reportCache.updatedAt = 0;
     let ai = null;
-    if (tx.type === 'REPORT_CREATE') {
+    if (tx.type === 'REPORT_CREATE')
       ai = aiVerify(tx.data?.description, tx.data?.category);
-    }
-
     res.json({ success: true, txId: result.txId || result.id || null, result, ai });
   } catch (e) {
     console.error('broadcast error:', e.message);
@@ -221,49 +217,60 @@ app.post('/api/broadcast', async (req, res) => {
   }
 });
 
+// Reports — scanned from blocks (contract /state endpoint is 404 on public testnet)
 app.get('/api/reports', async (req, res) => {
   try {
-    if (!CONTRACTS.ReportRegistry) return res.json({ reports: [], total: 0 });
-    const args = {};
-    if (req.query.category) args.category = req.query.category;
-    if (req.query.status)   args.status   = req.query.status;
-    if (req.query.reporter) args.reporter = req.query.reporter;
-    if (req.query.page)     args.page     = parseInt(req.query.page);
-    if (req.query.pageSize) args.pageSize = parseInt(req.query.pageSize);
-    const data = await callContract(CONTRACTS.ReportRegistry, 'getReports', args);
-    res.json(data);
+    let reports = await scanReports();
+
+    if (req.query.category) reports = reports.filter(r => r.category === req.query.category);
+    if (req.query.status)   reports = reports.filter(r => r.status   === req.query.status);
+    if (req.query.reporter) reports = reports.filter(r => r.reporter === req.query.reporter);
+
+    const page     = parseInt(req.query.page     || '1');
+    const pageSize = parseInt(req.query.pageSize || '20');
+    const start    = (page - 1) * pageSize;
+    const slice    = reports.slice(start, start + pageSize);
+
+    res.json({ reports: slice, total: reports.length });
   } catch (e) {
-    if (!isProd) console.error('/api/reports error:', e.message);
     res.status(500).json({ error: e.message, reports: [], total: 0 });
   }
 });
 
 app.get('/api/reports/:id', async (req, res) => {
   try {
-    if (!CONTRACTS.ReportRegistry) return res.status(404).json({ error: 'Contracts not deployed' });
-    const data = await callContract(CONTRACTS.ReportRegistry, 'getReport', { reportId: req.params.id });
-    if (!data) return res.status(404).json({ error: 'Report not found' });
-    res.json(data);
+    const reports = await scanReports();
+    const report  = reports.find(r => r.id === req.params.id || r.txId === req.params.id);
+    if (!report) return res.status(404).json({ error: 'Report not found' });
+    res.json(report);
   } catch (e) {
     res.status(404).json({ error: e.message });
   }
 });
 
+// Reputation + rewards — derived from scanned reports (contract state unavailable)
 app.get('/api/reputation/:address', async (req, res) => {
   try {
-    if (!CONTRACTS.ReputationManager) return res.json({ reputation: 0, level: 'Newcomer' });
-    const data = await callContract(CONTRACTS.ReputationManager, 'getScore', { address: req.params.address });
-    res.json({ address: req.params.address, reputation: data.score || 0, level: data.level || 'Newcomer' });
+    const reports    = await scanReports();
+    const myReports  = reports.filter(r => r.reporter === req.params.address);
+    // 10 rep per report submitted (matches ReputationManager award logic)
+    const reputation = myReports.length * 10;
+    const level      = reputation >= 200 ? 'Champion'
+                     : reputation >= 100 ? 'Elite'
+                     : reputation >= 50  ? 'Trusted'
+                     : reputation >= 10  ? 'Rising'
+                     : 'Newcomer';
+    res.json({ address: req.params.address, reputation, level });
   } catch (e) {
-    res.status(500).json({ error: e.message, reputation: 0 });
+    res.status(500).json({ error: e.message, reputation: 0, level: 'Newcomer' });
   }
 });
 
 app.get('/api/rewards/:address', async (req, res) => {
   try {
-    if (!CONTRACTS.RewardManager) return res.json({ points: 0 });
-    const data = await callContract(CONTRACTS.RewardManager, 'getPoints', { address: req.params.address });
-    res.json({ address: req.params.address, points: data.points || 0 });
+    const reports = await scanReports();
+    const points  = reports.filter(r => r.reporter === req.params.address).length * 10;
+    res.json({ address: req.params.address, points });
   } catch (e) {
     res.status(500).json({ error: e.message, points: 0 });
   }
@@ -271,9 +278,14 @@ app.get('/api/rewards/:address', async (req, res) => {
 
 app.get('/api/leaderboard', async (_req, res) => {
   try {
-    if (!CONTRACTS.ReputationManager) return res.json({ leaderboard: [] });
-    const data = await callContract(CONTRACTS.ReputationManager, 'getLeaderboard', { limit: 20 });
-    res.json(data);
+    const reports = await scanReports();
+    const counts  = {};
+    for (const r of reports) counts[r.reporter] = (counts[r.reporter] || 0) + 1;
+    const leaderboard = Object.entries(counts)
+      .map(([address, count]) => ({ address, score: count * 10 }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 20);
+    res.json({ leaderboard });
   } catch (e) {
     res.status(500).json({ error: e.message, leaderboard: [] });
   }
@@ -282,7 +294,7 @@ app.get('/api/leaderboard', async (_req, res) => {
 app.get('/api/blocks', async (req, res) => {
   try {
     const stats  = await rpc('/api/stats');
-    const latest = stats.blocks || stats.height || stats.blockCount || 0;
+    const latest = stats.blocks || 0;
     const count  = Math.min(parseInt(req.query.count || '10'), 20);
     const blocks = [];
     for (let i = latest; i > Math.max(0, latest - count); i--) {
@@ -309,17 +321,15 @@ app.get('/api/contracts', async (_req, res) => {
   catch (e) { res.status(500).json({ error: e.message, contracts: [] }); }
 });
 
-// ─── 404 / error ─────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
 app.use((err, _req, res, _next) => {
   if (!isProd) console.error(err);
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// ─── Start ────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log('\n╔══════════════════════════════════════╗');
-  console.log('║   CrowdPulse Backend  v2.3           ║');
+  console.log('║   CrowdPulse Backend  v2.4           ║');
   console.log('╚══════════════════════════════════════╝');
   console.log(`  API    → http://localhost:${PORT}`);
   console.log(`  SAYMAN → ${SAYMAN_RPC}`);
