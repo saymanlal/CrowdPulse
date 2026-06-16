@@ -1,19 +1,21 @@
 /**
  * CrowdPulse Crypto — browser-side signing
  *
- * CRITICAL: The hash payload field order here must be IDENTICAL to
- * core/transaction.js Transaction.hash() in the SAYMAN chain.
- * Field order in JSON.stringify matters for deterministic hashing.
+ * Hash payload matches transaction.js calculateHash() EXACTLY:
+ *   JSON.stringify({ type, timestamp, data, gasLimit, gasPrice, nonce })
  *
- * Chain's hash() serialises:
- *   { id, sender, recipient, amount, nonce, data, timestamp, type, gasLimit, gasPrice }
+ * Gas: chain deploy txs used gasLimit=90, gasPrice=1, gasUsed=39-54
+ *      Use gasLimit=100, gasPrice=1 — safe headroom, won't exceed balance
+ *
+ * Signature: { r, s } object — matches wallet.js sign() and isValid()
+ * Address:   sha256(publicKey).slice(0, 40)
  */
 
 import Elliptic from 'elliptic';
 const EC = Elliptic.ec;
 const ec = new EC('secp256k1');
 
-// ─── SHA-256 via Web Crypto API ───────────────────────────────────────────────
+// ─── SHA-256 via Web Crypto ───────────────────────────────────────────────────
 async function sha256Hex(str) {
   const buf  = new TextEncoder().encode(str);
   const hash = await crypto.subtle.digest('SHA-256', buf);
@@ -22,78 +24,110 @@ async function sha256Hex(str) {
     .join('');
 }
 
-// ─── Address derivation — mirrors wallet/wallet.js exactly ───────────────────
-// address = sha256(publicKey).slice(0, 40)
+// ─── Address: sha256(publicKey).slice(0, 40) ─────────────────────────────────
 export async function deriveAddress(publicKey) {
-  const hash = await sha256Hex(publicKey);
-  return hash.slice(0, 40);
+  return (await sha256Hex(publicKey)).slice(0, 40);
 }
 
-// ─── Generate a fresh wallet ──────────────────────────────────────────────────
+// ─── Generate fresh wallet ────────────────────────────────────────────────────
 export async function generateWallet() {
-  const keyPair    = ec.genKeyPair();
-  const privateKey = keyPair.getPrivate('hex');
-  const publicKey  = keyPair.getPublic('hex');
+  const kp         = ec.genKeyPair();
+  const privateKey = kp.getPrivate('hex').padStart(64, '0');
+  const publicKey  = kp.getPublic('hex');
   const address    = await deriveAddress(publicKey);
   return { privateKey, publicKey, address };
 }
 
-// ─── Restore wallet from private key ─────────────────────────────────────────
+// ─── Import wallet from private key hex ──────────────────────────────────────
 export async function importWallet(privateKey) {
-  if (!privateKey || privateKey.length < 60) throw new Error('Invalid private key');
-  const keyPair  = ec.keyFromPrivate(privateKey.trim(), 'hex');
-  const publicKey = keyPair.getPublic('hex');
+  if (!privateKey || privateKey.trim().length < 60)
+    throw new Error('Invalid private key — must be 64-char hex');
+  const kp        = ec.keyFromPrivate(privateKey.trim(), 'hex');
+  const publicKey = kp.getPublic('hex');
   const address   = await deriveAddress(publicKey);
   return { privateKey: privateKey.trim(), publicKey, address };
 }
 
-// ─── Build an unsigned CONTRACT_CALL transaction ──────────────────────────────
-// Matches Transaction constructor in core/transaction.js (Phase 9)
-export function buildTx({ sender, contractAddress, method, args, nonce, gasLimit = 200000, gasPrice = 1 }) {
-  // UUID-style id using Web Crypto
-  const id = crypto.randomUUID();
-  return {
-    id,
-    type:      'CONTRACT_CALL',
-    sender,
-    recipient: contractAddress,
-    amount:    0,
-    nonce,
-    gasLimit,
-    gasPrice,
-    // data must be { method, args } — matches chain's CONTRACT_CALL handler
-    data:      { method, args },
-    timestamp: Date.now(),
-    signature: null,
-  };
-}
-
-// ─── Hash a transaction — EXACT field order from transaction.js hash() ────────
-async function hashTx(tx) {
-  // DO NOT change field order — must match chain exactly
-  const payload = JSON.stringify({
-    id:        tx.id,
-    sender:    tx.sender,
-    recipient: tx.recipient,
-    amount:    tx.amount,
-    nonce:     tx.nonce,
-    data:      tx.data,
-    timestamp: tx.timestamp,
-    type:      tx.type,
-    gasLimit:  tx.gasLimit,
-    gasPrice:  tx.gasPrice,
-  });
+// ─── Hash — EXACT field order from transaction.js calculateHash() ─────────────
+async function hashTx({ type, timestamp, data, gasLimit, gasPrice, nonce }) {
+  const payload = JSON.stringify({ type, timestamp, data, gasLimit, gasPrice, nonce });
   return sha256Hex(payload);
 }
 
-// ─── Sign a transaction ───────────────────────────────────────────────────────
-// Returns { r, s } — matches Wallet.sign() in wallet/wallet.js
-export async function signTransaction(tx, privateKey) {
-  const keyPair = ec.keyFromPrivate(privateKey.trim(), 'hex');
-  const hash    = await hashTx(tx);
-  const sig     = keyPair.sign(hash);
+// ─── Build + sign a REPORT_CREATE transaction ─────────────────────────────────
+// gasLimit=100 matches what deploy.js used (gasUsed was 39-54, so 100 is safe)
+export async function buildReportTx({
+  wallet,
+  nonce,
+  category,
+  description,
+  location,
+  severity     = 'MEDIUM',
+  evidenceHash = null,
+  gasLimit     = 100,
+  gasPrice     = 1,
+}) {
+  const type      = 'REPORT_CREATE';
+  const timestamp = Date.now();
+
+  const data = {
+    from:         wallet.address,
+    category:     category    || 'OTHER',
+    location:     location    || {},
+    severity,
+    evidenceHash,
+    description:  description || '',
+    timestamp,
+  };
+
+  const hash = await hashTx({ type, timestamp, data, gasLimit, gasPrice, nonce });
+  const kp   = ec.keyFromPrivate(wallet.privateKey, 'hex');
+  const sig  = kp.sign(hash);
+
   return {
-    r: sig.r.toString('hex'),
-    s: sig.s.toString('hex'),
+    type,
+    timestamp,
+    data,
+    signature: { r: sig.r.toString('hex'), s: sig.s.toString('hex') },
+    publicKey: wallet.publicKey,
+    gasLimit,
+    gasPrice,
+    nonce,
+  };
+}
+
+// ─── Build + sign a CONTRACT_CALL transaction ─────────────────────────────────
+export async function buildContractCallTx({
+  wallet,
+  nonce,
+  contractAddress,
+  method,
+  args     = {},
+  gasLimit = 100,
+  gasPrice = 1,
+}) {
+  const type      = 'CONTRACT_CALL';
+  const timestamp = Date.now();
+
+  const data = {
+    from: wallet.address,
+    contractAddress,
+    method,
+    args,
+  };
+
+  const hash = await hashTx({ type, timestamp, data, gasLimit, gasPrice, nonce });
+  const kp   = ec.keyFromPrivate(wallet.privateKey, 'hex');
+  const sig  = kp.sign(hash);
+
+  return {
+    type,
+    timestamp,
+    data,
+    signature: { r: sig.r.toString('hex'), s: sig.s.toString('hex') },
+    publicKey: wallet.publicKey,
+    gasLimit,
+    gasPrice,
+    nonce,
   };
 }

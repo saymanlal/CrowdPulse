@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Send, Cpu, CheckCircle2, AlertCircle, Loader2, Wallet } from 'lucide-react';
 import { useWallet } from '../hooks/useWallet.jsx';
 import { api } from '../utils/api.js';
-import { signTransaction, buildTx } from '../utils/crypto.js';
+import { buildReportTx } from '../utils/crypto.js';
 
 const CATEGORIES = [
   'ROAD_DAMAGE', 'FLOOD', 'FIRE', 'STREETLIGHT',
@@ -12,24 +12,16 @@ const CATEGORIES = [
 
 export default function SubmitPage({ onConnect }) {
   const { wallet, refresh } = useWallet();
-  const [form, setForm] = useState({ category: '', description: '', location: '' });
-  const [ai, setAi]     = useState(null);
+  const [form, setForm]     = useState({ category: '', description: '', location: '' });
+  const [ai, setAi]         = useState(null);
   const [status, setStatus] = useState(null); // null | 'loading' | 'success' | 'error'
-  const [txId, setTxId]    = useState(null);
-  const [contracts, setContracts] = useState(null);
+  const [txId, setTxId]     = useState('');
+  const [errMsg, setErrMsg] = useState('');
 
-  // Load contract addresses from health endpoint
-  useEffect(() => {
-    api.health().then(h => setContracts(h.contracts)).catch(() => {});
-  }, []);
-
-  // AI preview as user types description
+  // AI preview while typing
   const runAi = useCallback(async (desc, cat) => {
     if (desc.length < 10) { setAi(null); return; }
-    try {
-      const result = await api.aiVerify({ description: desc, category: cat });
-      setAi(result);
-    } catch {}
+    try { setAi(await api.aiVerify({ description: desc, category: cat })); } catch {}
   }, []);
 
   useEffect(() => {
@@ -38,37 +30,32 @@ export default function SubmitPage({ onConnect }) {
   }, [form.description, form.category, runAi]);
 
   async function submit() {
-    if (!wallet || !contracts?.ReportRegistry) return;
+    if (!wallet) return;
     setStatus('loading');
+    setErrMsg('');
     try {
-      // 1. Get fresh nonce
+      // 1. Fresh nonce
       const { nonce } = await api.nonce(wallet.address);
 
-      // 2. Build unsigned tx
-      const tx = buildTx({
-        sender: wallet.address,
-        contractAddress: contracts.ReportRegistry,
-        method: 'createReport',
-        args: {
-          description: form.description,
-          category:    form.category,
-          location:    form.location,
-        },
+      // 2. Build + sign tx — flat SAYMAN format
+      const tx = await buildReportTx({
+        wallet,
         nonce,
+        category:    form.category,
+        description: form.description,
+        location:    form.location,
       });
 
-      // 3. Sign client-side
-      tx.signature = await signTransaction(tx, wallet.privateKey);
-
-      // 4. Broadcast
-      const result = await api.broadcast({ transaction: tx, publicKey: wallet.publicKey });
-      setTxId(result.txId);
+      // 3. Broadcast
+      const result = await api.broadcast(tx);
+      setTxId(result.txId || result.id || '');
       setStatus('success');
       setForm({ category: '', description: '', location: '' });
       setAi(null);
       await refresh(wallet.address);
     } catch (e) {
       console.error(e);
+      setErrMsg(e.message || 'Broadcast failed');
       setStatus('error');
     }
   }
@@ -77,7 +64,8 @@ export default function SubmitPage({ onConnect }) {
 
   if (!wallet) return (
     <div className="page center-page">
-      <motion.div className="connect-prompt" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
+      <motion.div className="connect-prompt"
+        initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
         <Wallet size={48} />
         <h2>Connect your wallet</h2>
         <p>Reports are signed with your wallet key and recorded on-chain.</p>
@@ -88,19 +76,19 @@ export default function SubmitPage({ onConnect }) {
 
   return (
     <div className="page">
-      <motion.div className="form-card" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
+      <motion.div className="form-card"
+        initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
+
         <h2 className="form-title">Submit a Report</h2>
-        <p className="form-sub">Your report will be signed with your wallet and broadcast to the SAYMAN chain.</p>
+        <p className="form-sub">Signed with your wallet · broadcast to SAYMAN chain.</p>
 
         <div className="field">
           <label>Category</label>
           <div className="cat-grid">
             {CATEGORIES.map(c => (
-              <button
-                key={c}
+              <button key={c}
                 className={`cat-btn ${form.category === c ? 'active' : ''}`}
-                onClick={() => setForm(f => ({ ...f, category: c }))}
-              >
+                onClick={() => setForm(f => ({ ...f, category: c }))}>
                 {c.replace(/_/g, ' ')}
               </button>
             ))}
@@ -109,66 +97,59 @@ export default function SubmitPage({ onConnect }) {
 
         <div className="field">
           <label>Description <span className="hint">min 20 chars</span></label>
-          <textarea
-            rows={4}
-            placeholder="Describe the issue clearly — what you saw, how severe, any context."
+          <textarea rows={4}
+            placeholder="Describe the issue clearly — what you saw, severity, any context."
             value={form.description}
-            onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
-          />
+            onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
           <span className="char-count">{form.description.length} / 500</span>
         </div>
 
         <div className="field">
           <label>Location</label>
-          <input
-            type="text"
+          <input type="text"
             placeholder="Street name, landmark, GPS coords…"
             value={form.location}
-            onChange={e => setForm(f => ({ ...f, location: e.target.value }))}
-          />
+            onChange={e => setForm(f => ({ ...f, location: e.target.value }))} />
         </div>
 
-        {/* AI Preview */}
         <AnimatePresence>
           {ai && (
-            <motion.div
-              className={`ai-badge ${ai.isValid ? 'valid' : 'warn'}`}
+            <motion.div className={`ai-badge ${ai.isValid ? 'valid' : 'warn'}`}
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
-              exit={{ opacity: 0, height: 0 }}
-            >
+              exit={{ opacity: 0, height: 0 }}>
               <Cpu size={14} />
-              <span>AI: <b>{ai.aiCategory.replace('_',' ')}</b> — {ai.confidence}% confidence</span>
+              <span>AI: <b>{ai.aiCategory.replace(/_/g, ' ')}</b> — {ai.confidence}% confidence</span>
               {ai.isValid ? <CheckCircle2 size={14} /> : <AlertCircle size={14} />}
             </motion.div>
           )}
         </AnimatePresence>
 
-        {/* Status */}
         <AnimatePresence>
           {status === 'success' && (
-            <motion.div className="alert success" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-              <CheckCircle2 size={14} /> Report broadcast! Tx: <code>{txId?.slice(0,16)}…</code>
+            <motion.div className="alert success"
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+              <CheckCircle2 size={14} />
+              &nbsp;Report broadcast!{txId && <> Tx: <code>{txId.slice(0, 16)}…</code></>}
             </motion.div>
           )}
           {status === 'error' && (
-            <motion.div className="alert error" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-              <AlertCircle size={14} /> Broadcast failed — check your wallet balance and try again.
+            <motion.div className="alert error"
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+              <AlertCircle size={14} />
+              &nbsp;{errMsg || 'Broadcast failed — check balance and retry.'}
             </motion.div>
           )}
         </AnimatePresence>
 
-        <button
-          className="btn-primary full"
-          onClick={submit}
-          disabled={!valid || status === 'loading'}
-        >
+        <button className="btn-primary full" onClick={submit}
+          disabled={!valid || status === 'loading'}>
           {status === 'loading'
             ? <><Loader2 size={14} className="spin" /> Signing &amp; Broadcasting…</>
             : <><Send size={14} /> Submit Report</>}
         </button>
 
-        <p className="wallet-hint">Signing as <code>{wallet.address.slice(0,10)}…</code></p>
+        <p className="wallet-hint">Signing as <code>{wallet.address.slice(0, 10)}…</code></p>
       </motion.div>
     </div>
   );
