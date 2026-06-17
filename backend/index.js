@@ -8,7 +8,8 @@ import path      from 'path';
 import { fileURLToPath } from 'url';
 import aiRouter     from './routes/ai.routes.js';
 import ipfsRouter   from './routes/ipfs.routes.js';
-import reportRouter from './routes/report.routes.js';
+import reportRouter  from './routes/report.routes.js';
+import profileRouter from './routes/profile.routes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app       = express();
@@ -178,6 +179,9 @@ app.use('/api/ipfs',   ipfsRouter);
 
 // Unified pipeline          (POST /api/report/process)  ← Phase 7
 app.use('/api/report', reportRouter);
+
+// Profile endpoints          (GET /api/profile/:address/*)  ← Phase 10
+app.use('/api/profile', profileRouter);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', contracts: CONTRACTS, rpc: SAYMAN_RPC });

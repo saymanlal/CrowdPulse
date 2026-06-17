@@ -1,12 +1,16 @@
 /**
- * report.routes.js — CrowdPulse Unified Report Routes  (Phase 7)
+ * report.routes.js — CrowdPulse Report Routes  (Phase 7 + Phase 8)
  *
- * POST /api/report/process — full AI + IPFS pipeline in one call.
+ * POST /api/report/process — AI + IPFS pipeline  (Phase 7)
+ * POST /api/report/create  — AI + IPFS + Blockchain  (Phase 8)
  */
 
 import { Router } from 'express';
 import multer      from 'multer';
-import { processReportController } from '../controllers/report.controller.js';
+import {
+  processReportController,
+  createReportController,
+} from '../controllers/report.controller.js';
 
 const router = Router();
 
@@ -29,23 +33,24 @@ const upload = multer({
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 /**
- * POST /api/report/process
+ * POST /api/report/process                                         (Phase 7)
+ * Gemini Vision + IPFS — no blockchain write.
  *
- * Unified endpoint: analyze image with Gemini Vision + upload to IPFS.
- * Both operations run in parallel; result is a single combined JSON.
- *
- * Body (multipart/form-data):
- *   image      File    required
- *   reporter   string  optional   Reporter wallet address
- *   location   string  optional   Location / GPS string
- *
- * Example:
- *   curl -X POST http://localhost:3001/api/report/process \
- *        -F "image=@pothole.jpg" \
- *        -F "reporter=0xabc123" \
- *        -F "location=MG Road, Bangalore"
+ * curl -X POST http://localhost:3001/api/report/process \
+ *      -F "image=@pothole.jpg"
  */
 router.post('/process', upload.single('image'), processReportController);
+
+/**
+ * POST /api/report/create                                          (Phase 8)
+ * Full pipeline: Gemini Vision → Pinata IPFS → ReportRegistry on SAYMAN.
+ *
+ * curl -X POST http://localhost:3001/api/report/create \
+ *      -F "image=@pothole.jpg" \
+ *      -F "location=MG Road, Bangalore" \
+ *      -F "reporter=<wallet_address>"
+ */
+router.post('/create', upload.single('image'), createReportController);
 
 // ─── Multer error handler ─────────────────────────────────────────────────────
 router.use((err, _req, res, _next) => {
