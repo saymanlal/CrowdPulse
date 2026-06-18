@@ -20,6 +20,7 @@ import { getCache, setCache, invalidateCache, getReports } from './services/repo
 import { getPoints } from './services/reward.service.js';
 import { getReputation } from './services/reputation.service.js';
 import { ensureAssigned, enrichReports } from './services/assignment.service.js';
+import { listCitiesController } from './controllers/department.controller.js'; // Phase 14C
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app       = express();
@@ -125,12 +126,22 @@ async function scanReports() {
         const txs = block.transactions || block.data?.transactions || [];
         for (const tx of txs) {
           if (tx.type === 'REPORT_CREATE' && tx.data) {
+            // Phase 14C: parse city from structured location JSON
+            let city = null;
+            try {
+              const loc = typeof tx.data.location === 'string'
+                ? JSON.parse(tx.data.location)
+                : tx.data.location;
+              city = loc?.city || null;
+            } catch { city = null; }
+
             newReports.push({
               id:          tx.id,
               reporter:    tx.data.from,
               category:    tx.data.category   || 'OTHER',
               description: tx.data.description || '',
               location:    tx.data.location   || '',
+              city,                                     // Phase 14C
               severity:    tx.data.severity   || 'MEDIUM',
               status:      'OPEN',
               createdAt:   tx.timestamp,
@@ -219,6 +230,9 @@ app.use('/api/auth', authRouter);
 // Role management              (GET/POST /api/rbac/*)         ← Phase 14A
 app.use('/api/rbac', rbacRouter);
 
+// Phase 14C: City list (public)
+app.get('/api/cities', listCitiesController);
+
 // Department routing           (GET/POST /api/departments/*)  ← Phase 14B
 app.use('/api/departments', departmentRouter);
 
@@ -287,6 +301,7 @@ app.get('/api/reports', async (req, res) => {
     if (req.query.status)     reports = reports.filter(r => r.status     === req.query.status);
     if (req.query.reporter)   reports = reports.filter(r => r.reporter   === req.query.reporter);
     if (req.query.department) reports = reports.filter(r => r.department === req.query.department);
+    if (req.query.city)       reports = reports.filter(r => r.city       === req.query.city);  // Phase 14C
 
     const page     = parseInt(req.query.page     || '1');
     const pageSize = parseInt(req.query.pageSize || '20');
@@ -386,7 +401,7 @@ app.use((err, _req, res, _next) => {
 
 app.listen(PORT, () => {
   console.log('\n╔══════════════════════════════════════╗');
-  console.log('║   CrowdPulse Backend  v2.6 (Depts)  ║');
+  console.log('║   CrowdPulse Backend  v2.7 (Juris) ║');
   console.log('╚══════════════════════════════════════╝');
   console.log(`  API    → http://localhost:${PORT}`);
   console.log(`  SAYMAN → ${SAYMAN_RPC}`);

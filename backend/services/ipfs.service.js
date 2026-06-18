@@ -52,13 +52,20 @@ export async function uploadToIPFS(buffer, mimeType, filename, metadata = {}) {
   });
 
   // Pinata metadata — stored alongside the pin, queryable via Pinata dashboard
+  const finalKeyvalues = {
+    source:    'CrowdPulse',
+    uploadedAt: new Date().toISOString(),
+    ...metadata,
+  };
+
+  // If location is an object (e.g. from Phase 14C), serialize to string for Pinata keyvalues
+  if (finalKeyvalues.location && typeof finalKeyvalues.location !== 'string') {
+    finalKeyvalues.location = JSON.stringify(finalKeyvalues.location);
+  }
+
   const pinataMetadata = JSON.stringify({
     name:      filename || 'CrowdPulse Upload',
-    keyvalues: {
-      source:    'CrowdPulse',
-      uploadedAt: new Date().toISOString(),
-      ...metadata,
-    },
+    keyvalues: finalKeyvalues,
   });
   form.append('pinataMetadata', pinataMetadata);
 
@@ -66,15 +73,36 @@ export async function uploadToIPFS(buffer, mimeType, filename, metadata = {}) {
   const pinataOptions = JSON.stringify({ cidVersion: 1 });
   form.append('pinataOptions', pinataOptions);
 
+  // ── DEBUG: log all request parameters before sending ──────────────────────
+  const jwt_loaded = jwt ? `${jwt.slice(0, 15)}…${jwt.slice(-8)} (len=${jwt.length})` : 'MISSING';
+  console.log('[IPFS_DEBUG] JWT loaded:', jwt_loaded);
+  console.log('[IPFS_DEBUG] filename:', filename);
+  console.log('[IPFS_DEBUG] mimeType:', mimeType);
+  console.log('[IPFS_DEBUG] buffer size (bytes):', buffer?.length);
+  console.log('[IPFS_DEBUG] pinataMetadata raw:', pinataMetadata);
+  console.log('[IPFS_DEBUG] pinataOptions raw:', pinataOptions);
+  console.log('[IPFS_DEBUG] form headers:', form.getHeaders());
+
   // POST to Pinata
-  const response = await axios.post(PINATA_API_URL, form, {
-    maxBodyLength: Infinity,   // allow large files
-    headers: {
-      Authorization: `Bearer ${jwt}`,
-      ...form.getHeaders(),
-    },
-    timeout: 60_000,           // 60-second timeout
-  });
+  let response;
+  console.log("PINATA METADATA:", pinataMetadata);
+  try {
+    response = await axios.post(PINATA_API_URL, form, {
+      maxBodyLength: Infinity,   // allow large files
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        ...form.getHeaders(),
+      },
+      timeout: 60_000,           // 60-second timeout
+    });
+  } catch (axiosErr) {
+    console.log('[IPFS_DEBUG] Axios error caught');
+    console.log('[IPFS_DEBUG] IPFS STATUS:', axiosErr.response?.status);
+    console.log('[IPFS_DEBUG] IPFS DATA:', JSON.stringify(axiosErr.response?.data, null, 2));
+    console.log('[IPFS_DEBUG] IPFS HEADERS:', JSON.stringify(axiosErr.response?.headers, null, 2));
+    console.log('[IPFS_DEBUG] Raw response text:', axiosErr.response?.data);
+    throw axiosErr;
+  }
 
   const cid = response.data?.IpfsHash;
   if (!cid) {

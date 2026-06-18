@@ -107,9 +107,9 @@ function MunicipalReportCard({ report, onAction, actionLabel, actionColor, actio
 }
 
 export default function MunicipalPage() {
-  const { isAuthenticated, role, department } = useWallet();
+  const { isAuthenticated, role, department, city } = useWallet();
   const [activeTab, setActiveTab] = useState('Assigned');
-  const [deptData,  setDeptData]  = useState({ reports: [], total: 0, displayName: null, noDepartment: false, message: null });
+  const [deptData,  setDeptData]  = useState({ reports: [], total: 0, displayName: null, cityName: null, noDepartment: false, noCity: false, message: null });
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState(null);
 
@@ -120,9 +120,11 @@ export default function MunicipalPage() {
       setDeptData({
         reports:      data.reports || [],
         total:        data.total   || 0,
-        displayName:  data.displayName || null,
+        displayName:  data.displayName  || null,
+        cityName:     data.cityName     || null,
         noDepartment: data.noDepartment || false,
-        message:      data.message || null,
+        noCity:       data.noCity       || false,
+        message:      data.message      || null,
       });
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
@@ -142,13 +144,14 @@ export default function MunicipalPage() {
     );
   }
 
-  const { reports, displayName, noDepartment, message } = deptData;
+  const { reports, displayName, cityName, noDepartment, noCity, message } = deptData;
   const assigned   = reports.filter(r => r.status === 'VERIFIED');
   const inProgress = reports.filter(r => r.status === 'IN_PROGRESS');
   const completed  = reports.filter(r => r.status === 'RESOLVED');
   const displayMap = { Assigned: assigned, 'In Progress': inProgress, Completed: completed };
   const current    = displayMap[activeTab] || [];
   const deptColor  = DEPT_COLOR[department] || '#6b7280';
+  const isBlocked  = noDepartment || noCity;
 
   return (
     <div className="page gov-page">
@@ -159,23 +162,28 @@ export default function MunicipalPage() {
             <Hammer size={22} className="gov-title-icon municipal" />
             <h1 className="gov-title">Municipal Dashboard</h1>
           </div>
-          {displayName && (
+          {(displayName || cityName) && (
             <div className="dept-badge-row">
               <Building2 size={12} />
-              <span className="dept-badge" style={{ color: deptColor, background: deptColor + '15', borderColor: deptColor + '44' }}>
-                {displayName}
-              </span>
+              {displayName && (
+                <span className="dept-badge" style={{ color: deptColor, background: deptColor + '15', borderColor: deptColor + '44' }}>
+                  {displayName}
+                </span>
+              )}
+              {cityName && (
+                <span className="city-badge">{cityName}</span>
+              )}
             </div>
           )}
-          <p className="gov-sub">Manage assigned reports and track resolution progress</p>
+          <p className="gov-sub">Manage assigned reports and track resolution progress in your jurisdiction</p>
         </div>
         <button className="gov-refresh-btn" onClick={load} disabled={loading}>
           <RefreshCw size={14} className={loading ? 'spin' : ''} /> Refresh
         </button>
       </div>
 
-      {/* No department notice */}
-      {noDepartment && (
+      {/* No dept / no city notice */}
+      {isBlocked && (
         <div className="dept-no-dept-notice">
           <AlertTriangle size={16} />
           <span>{message}</span>
@@ -183,7 +191,7 @@ export default function MunicipalPage() {
       )}
 
       {/* Stats */}
-      {!noDepartment && (
+      {!isBlocked && (
         <div className="gov-stats-row">
           <div className="gov-stat">
             <span className="gov-stat-val text-accent">{assigned.length}</span>
@@ -225,6 +233,12 @@ export default function MunicipalPage() {
           <Building2 size={36} style={{ color: 'var(--muted)' }} />
           <p>Awaiting department assignment</p>
           <p style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>Contact your administrator to be assigned to a department</p>
+        </div>
+      ) : noCity ? (
+        <div className="empty-state">
+          <Building2 size={36} style={{ color: 'var(--muted)' }} />
+          <p>Department assigned but no city set</p>
+          <p style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>Contact your administrator to assign your city jurisdiction</p>
         </div>
       ) : current.length === 0 ? (
         <div className="empty-state">

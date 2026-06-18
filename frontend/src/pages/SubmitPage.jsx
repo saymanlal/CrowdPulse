@@ -1,6 +1,6 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Cpu, CheckCircle2, AlertCircle, Loader2, Upload, Image, X, Shield, Coins, Star } from 'lucide-react';
+import { Send, Cpu, CheckCircle2, AlertCircle, Loader2, Upload, Image, X, Shield, Coins, Star, MapPin, Building2 } from 'lucide-react';
 import { api } from '../utils/api.js';
 
 const STEPS = ['Uploading', 'AI Analysis', 'Fraud Check', 'IPFS Upload', 'Blockchain', 'Rewards'];
@@ -21,11 +21,19 @@ function StepIndicator({ current }) {
 export default function SubmitPage() {
   const [file, setFile]         = useState(null);
   const [preview, setPreview]   = useState(null);
-  const [status, setStatus]     = useState(null); // null | 'loading' | 'success' | 'error' | 'duplicate'
+  const [location, setLocation] = useState('');   // address text
+  const [city, setCity]         = useState('');   // city code
+  const [cities, setCities]     = useState([]);   // from /api/cities
+  const [status, setStatus]     = useState(null);
   const [step, setStep]         = useState(0);
   const [result, setResult]     = useState(null);
   const [errMsg, setErrMsg]     = useState('');
   const fileRef                 = useRef(null);
+
+  // Load city list on mount
+  useEffect(() => {
+    api.cities().then(d => setCities(d.cities || [])).catch(() => {});
+  }, []);
 
   function handleFile(e) {
     const f = e.target.files?.[0];
@@ -45,17 +53,16 @@ export default function SubmitPage() {
   }
 
   async function submit() {
-    if (!file) return;
+    if (!file)  return;
+    if (!city) { setErrMsg('Please select a city.'); setStatus('error'); return; }
     setStatus('loading');
     setErrMsg('');
     setStep(0);
 
-    // Simulate step progress (actual pipeline does all steps server-side)
     const stepTimer = setInterval(() => setStep(s => Math.min(s + 1, STEPS.length - 1)), 2800);
 
     try {
-      const data = await api.submitReport(file);
-
+      const data = await api.submitReport(file, city, location);
       clearInterval(stepTimer);
       setStep(STEPS.length);
 
@@ -74,6 +81,8 @@ export default function SubmitPage() {
       setStatus('error');
     }
   }
+
+  const canSubmit = file && city && status !== 'loading';
 
   return (
     <div className="page">
@@ -100,6 +109,35 @@ export default function SubmitPage() {
           <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
         </div>
 
+        {/* City — Phase 14C */}
+        <div className="field">
+          <label><Building2 size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />City <span className="field-required">*</span></label>
+          <select
+            className="field-select"
+            value={city}
+            onChange={e => { setCity(e.target.value); setStatus(null); setErrMsg(''); }}
+          >
+            <option value="">Select city…</option>
+            {cities.map(c => (
+              <option key={c.code} value={c.code}>{c.name}, {c.state}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Location Address — Phase 14C */}
+        <div className="field">
+          <label><MapPin size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />Address / Landmark <span className="field-optional">(optional)</span></label>
+          <input
+            type="text"
+            className="field-input"
+            placeholder="e.g. MP Nagar Zone 2, Near DB Mall"
+            maxLength={200}
+            value={location}
+            onChange={e => setLocation(e.target.value)}
+          />
+          <span className="field-hint">{location.length}/200</span>
+        </div>
+
         {/* Pipeline progress */}
         <AnimatePresence>
           {status === 'loading' && (
@@ -117,6 +155,14 @@ export default function SubmitPage() {
                 <CheckCircle2 size={20} />
                 <span>Report Created Successfully!</span>
               </div>
+              {/* City badge in result */}
+              {result.cityName && (
+                <div className="dept-badge-row" style={{ marginBottom: '0.5rem' }}>
+                  <Building2 size={12} />
+                  <span>{result.cityName}</span>
+                  {result.address && <span style={{ color: 'var(--muted)' }}>· {result.address}</span>}
+                </div>
+              )}
               <div className="result-grid">
                 <div className="result-item">
                   <Cpu size={14} />
@@ -172,8 +218,7 @@ export default function SubmitPage() {
         </AnimatePresence>
 
         {/* Submit button */}
-        <button className="btn-primary full" onClick={submit}
-          disabled={!file || status === 'loading'}>
+        <button className="btn-primary full" onClick={submit} disabled={!canSubmit}>
           {status === 'loading'
             ? <><Loader2 size={14} className="spin" /> Processing…</>
             : <><Send size={14} /> Submit Report</>}

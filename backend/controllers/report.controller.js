@@ -1,11 +1,13 @@
 /**
- * report.controller.js — CrowdPulse Report Controller  (Phase 7 + Phase 8)
+ * report.controller.js — CrowdPulse Report Controller  (Phase 7 + Phase 8 + 14C)
  *
- * Phase 7: processReportController  → POST /api/report/process
- * Phase 8: createReportController   → POST /api/report/create
+ * Phase 7:  processReportController  → POST /api/report/process
+ * Phase 8:  createReportController   → POST /api/report/create
+ * Phase 14C: city + address required in createReportController
  */
 
 import { processReport, createFullReport } from '../services/report.service.js';
+import { isValidCity, getCityName }        from '../services/jurisdiction.service.js';
 
 const ALLOWED_MIME_TYPES = [
   'image/jpeg',
@@ -175,9 +177,26 @@ export async function createReportController(req, res) {
     }
 
     // ── 4. Metadata from form fields ───────────────────────────────────────────
+    const rawCity    = (req.body?.city    || '').trim().toUpperCase();
+    const rawAddress = (req.body?.address || '').trim();
+
+    // Phase 14C: city is required
+    if (!rawCity) {
+      return res.status(400).json({ error: 'city is required. Select a city from the list.' });
+    }
+    if (!isValidCity(rawCity)) {
+      return res.status(400).json({ error: `Invalid city: "${rawCity}". Use one of the supported cities.` });
+    }
+
+    // Build structured location for blockchain tx + report cache
+    const locationObj = {
+      address: rawAddress || 'Unknown location',
+      city:    rawCity,
+    };
+
     const meta = {
       reporter:    req.body?.reporter    || null,
-      location:    req.body?.location    || null,
+      location:    locationObj,              // Phase 14C: { address, city } object
       description: req.body?.description || null,
     };
 
@@ -222,6 +241,9 @@ export async function createReportController(req, res) {
       blockchain: result.blockchain,
       rewards:    result.rewards    || null,
       reputation: result.reputation || null,
+      city:       rawCity,                   // Phase 14C
+      cityName:   getCityName(rawCity),      // Phase 14C
+      address:    rawAddress || null,        // Phase 14C
     });
 
   } catch (err) {

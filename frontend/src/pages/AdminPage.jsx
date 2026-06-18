@@ -53,21 +53,24 @@ const short = a => a ? `${a.slice(0, 10)}…${a.slice(-8)}` : '—';
 function UsersTab() {
   const [roles,     setRoles]     = useState({});
   const [userDepts, setUserDepts] = useState({});
+  const [cities,    setCities]    = useState([]);  // Phase 14C
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState(null);
 
   const [newAddr,   setNewAddr]   = useState('');
   const [newRole,   setNewRole]   = useState('AUTHORITY');
   const [newDept,   setNewDept]   = useState('');
+  const [newCity,   setNewCity]   = useState('');  // Phase 14C
   const [assigning, setAssigning] = useState(false);
   const [assignMsg, setAssignMsg] = useState(null);
 
   const loadData = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [rv, dv] = await Promise.allSettled([api.rbacRoles(), api.deptUsers()]);
+      const [rv, dv, cv] = await Promise.allSettled([api.rbacRoles(), api.deptUsers(), api.cities()]);
       if (rv.status === 'fulfilled') setRoles(rv.value.roles || {});
       if (dv.status === 'fulfilled') setUserDepts(dv.value.userDepartments || {});
+      if (cv.status === 'fulfilled') setCities(cv.value.cities || []);  // Phase 14C
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
   }, []);
@@ -79,10 +82,18 @@ function UsersTab() {
     if (!newAddr.trim()) return;
     setAssigning(true); setAssignMsg(null);
     try {
-      // Role + optional department in one call
-      await api.rbacAssign({ address: newAddr.trim().toLowerCase(), role: newRole, department: newDept || undefined });
-      setAssignMsg({ ok: true, msg: `Assigned ${newRole}${newDept ? ' + ' + DEPT_DISPLAY[newDept] : ''} to ${newAddr.slice(0, 12)}…` });
-      setNewAddr(''); setNewDept('');
+      // Role + optional department + city in one call
+      await api.rbacAssign({
+        address:    newAddr.trim().toLowerCase(),
+        role:       newRole,
+        department: newDept || undefined,
+        city:       newCity || undefined,  // Phase 14C
+      });
+      const deptLabel = newDept ? (DEPT_DISPLAY[newDept] || newDept) : '';
+      const cityLabel = newCity ? cities.find(c => c.code === newCity)?.name : '';
+      const suffix    = [deptLabel, cityLabel].filter(Boolean).join(' · ');
+      setAssignMsg({ ok: true, msg: `Assigned ${newRole}${suffix ? ' + ' + suffix : ''} to ${newAddr.slice(0, 12)}…` });
+      setNewAddr(''); setNewDept(''); setNewCity('');
       await loadData();
     } catch (err) {
       setAssignMsg({ ok: false, msg: err.message });
@@ -95,7 +106,7 @@ function UsersTab() {
     <div className="admin-users-tab">
       {/* Assign Form */}
       <div className="admin-assign-card">
-        <div className="admin-assign-title"><UserPlus size={16} /> Assign Role + Department</div>
+        <div className="admin-assign-title"><UserPlus size={16} /> Assign Role + Department + City</div>
         <form className="admin-assign-form" onSubmit={handleAssign}>
           <input
             type="text" className="admin-assign-input"
@@ -108,6 +119,11 @@ function UsersTab() {
           <select className="admin-assign-select" value={newDept} onChange={e => setNewDept(e.target.value)}>
             <option value="">— No Department —</option>
             {DEPT_LIST.map(d => <option key={d} value={d}>{DEPT_DISPLAY[d]}</option>)}
+          </select>
+          {/* Phase 14C: City dropdown */}
+          <select className="admin-assign-select" value={newCity} onChange={e => setNewCity(e.target.value)}>
+            <option value="">— No City —</option>
+            {cities.map(c => <option key={c.code} value={c.code}>{c.name}, {c.state}</option>)}
           </select>
           <button className="admin-assign-btn" type="submit" disabled={assigning || !newAddr.trim()}>
             {assigning ? <Loader2 size={14} className="spin" /> : <CheckCircle2 size={14} />}
@@ -122,12 +138,13 @@ function UsersTab() {
         )}
       </div>
 
-      {/* Role + Department table */}
+      {/* Role + Department + City table */}
       <div className="admin-table-wrap">
-        <div className="admin-table-header" style={{ gridTemplateColumns: '1fr auto auto' }}>
+        <div className="admin-table-header" style={{ gridTemplateColumns: '1fr auto auto auto' }}>
           <span>Wallet Address</span>
           <span>Role</span>
           <span>Department</span>
+          <span>City</span>
         </div>
         {loading ? (
           <div className="center-loader" style={{ padding: '2rem 0' }}><Loader2 size={22} className="spin" /></div>
@@ -138,14 +155,16 @@ function UsersTab() {
         ) : (
           <div className="admin-table-body">
             {entries.map(([addr, role]) => {
-              const meta = ROLE_META[role] || ROLE_META.CITIZEN;
-              const dept = userDepts[addr];
-              const dc   = DEPT_COLOR[dept] || null;
+              const meta  = ROLE_META[role] || ROLE_META.CITIZEN;
+              const juris = userDepts[addr];  // may be string (old) or { department, city }
+              const dept  = typeof juris === 'string' ? juris : (juris?.department || null);
+              const city  = typeof juris === 'string' ? null  : (juris?.city || null);
+              const dc    = DEPT_COLOR[dept] || null;
               return (
                 <motion.div
                   key={addr}
                   className="admin-table-row"
-                  style={{ gridTemplateColumns: '1fr auto auto' }}
+                  style={{ gridTemplateColumns: '1fr auto auto auto' }}
                   initial={{ opacity: 0 }} animate={{ opacity: 1 }}
                 >
                   <code className="admin-addr">{short(addr)}</code>
@@ -159,6 +178,12 @@ function UsersTab() {
                     <span className="admin-role-chip" style={{ color: dc, background: dc + '15' }}>
                       <Building2 size={11} /> {DEPT_DISPLAY[dept] || dept}
                     </span>
+                  ) : (
+                    <span className="admin-no-dept">—</span>
+                  )}
+                  {/* Phase 14C: city column */}
+                  {city ? (
+                    <span className="city-badge" style={{ fontSize: '0.7rem' }}>{city}</span>
                   ) : (
                     <span className="admin-no-dept">—</span>
                   )}

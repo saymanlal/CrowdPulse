@@ -14,6 +14,7 @@ export function WalletProvider({ children }) {
   const [rewards,       setRewards]       = useState(0);
   const [role,          setRole]          = useState(null);
   const [department,    setDepartment]    = useState(null);  // Phase 14B
+  const [city,          setCity]          = useState(null);  // Phase 14C
   const [token,         setToken]         = useState(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading,       setLoading]       = useState(false);
@@ -62,11 +63,12 @@ export function WalletProvider({ children }) {
       setRole(userRole);
       setIsAuthenticated(true);
 
-      // Phase 14B: fetch department after auth
+      // Phase 14B+14C: fetch department + city after auth
       try {
-        const { department: dept } = await api.myDepartment();
-        setDepartment(dept || null);
-      } catch { /* no dept assigned yet — fine */ }
+        const me = await api.myDepartment();
+        setDepartment(me.department || null);
+        setCity(me.city       || null);  // Phase 14C
+      } catch { /* no jurisdiction assigned yet — fine */ }
 
       return result;
     } catch (e) {
@@ -86,10 +88,11 @@ export function WalletProvider({ children }) {
       setToken(savedToken);
       setRole(me.role);
       setIsAuthenticated(true);
-      // Phase 14B: also fetch department
+      // Phase 14B+14C: also fetch department + city
       try {
-        const { department: dept } = await api.myDepartment();
-        setDepartment(dept || null);
+        const me = await api.myDepartment();
+        setDepartment(me.department || null);
+        setCity(me.city       || null);  // Phase 14C
       } catch { /* dept not assigned yet */ }
       return true;
     } catch {
@@ -155,6 +158,7 @@ export function WalletProvider({ children }) {
     setToken(null);
     setRole(null);
     setDepartment(null); // Phase 14B
+    setCity(null);       // Phase 14C
     setIsAuthenticated(false);
     setBalance(0);
     setReputation(0);
@@ -164,7 +168,7 @@ export function WalletProvider({ children }) {
   return (
     <WalletCtx.Provider value={{
       wallet, balance, reputation, rewards,
-      role, department, token, isAuthenticated,
+      role, department, city, token, isAuthenticated,
       loading, authLoading, error,
       connect, disconnect, refresh, authFlow,
     }}>

@@ -1,0 +1,12 @@
+[
+  { "code": "BHOPAL",    "name": "Bhopal",    "state": "MP" },
+  { "code": "INDORE",    "name": "Indore",    "state": "MP" },
+  { "code": "JABALPUR",  "name": "Jabalpur",  "state": "MP" },
+  { "code": "GWALIOR",   "name": "Gwalior",   "state": "MP" },
+  { "code": "UJJAIN",    "name": "Ujjain",    "state": "MP" },
+  { "code": "RAIPUR",    "name": "Raipur",    "state": "CG" },
+  { "code": "NAGPUR",    "name": "Nagpur",    "state": "MH" },
+  { "code": "PUNE",      "name": "Pune",      "state": "MH" },
+  { "code": "DELHI",     "name": "Delhi",     "state": "DL" },
+  { "code": "BENGALURU", "name": "Bengaluru", "state": "KA" }
+]

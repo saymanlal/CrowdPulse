@@ -104,9 +104,9 @@ function AuthReportCard({ report, onAction, actionLabel, actionColor, actionable
 }
 
 export default function AuthorityPage() {
-  const { isAuthenticated, role, department } = useWallet();
+  const { isAuthenticated, role, department, city } = useWallet();
   const [activeTab,   setActiveTab]   = useState('Pending');
-  const [deptData,    setDeptData]    = useState({ reports: [], total: 0, displayName: null, noDepartment: false, message: null });
+  const [deptData,    setDeptData]    = useState({ reports: [], total: 0, displayName: null, cityName: null, noDepartment: false, noCity: false, message: null });
   const [loading,     setLoading]     = useState(true);
   const [error,       setError]       = useState(null);
 
@@ -117,9 +117,12 @@ export default function AuthorityPage() {
       setDeptData({
         reports:      data.reports || [],
         total:        data.total   || 0,
-        displayName:  data.displayName || null,
+        displayName:  data.displayName  || null,
+        cityName:     data.cityName     || null,
+        jurisdiction: data.jurisdiction || null,
         noDepartment: data.noDepartment || false,
-        message:      data.message || null,
+        noCity:       data.noCity       || false,
+        message:      data.message      || null,
       });
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
@@ -140,11 +143,12 @@ export default function AuthorityPage() {
     );
   }
 
-  const { reports, displayName, noDepartment, message } = deptData;
+  const { reports, displayName, cityName, jurisdiction, noDepartment, noCity, message } = deptData;
   const pending  = reports.filter(r => r.status === 'OPEN');
   const verified = reports.filter(r => ['VERIFIED', 'IN_PROGRESS', 'RESOLVED'].includes(r.status));
   const current  = { Pending: pending, Verified: verified, Rejected: [] }[activeTab] || [];
   const deptColor = DEPT_COLOR[department] || '#6b7280';
+  const isBlocked = noDepartment || noCity;
 
   return (
     <div className="page gov-page">
@@ -155,23 +159,28 @@ export default function AuthorityPage() {
             <ShieldCheck size={22} className="gov-title-icon authority" />
             <h1 className="gov-title">Authority Dashboard</h1>
           </div>
-          {displayName && (
+          {(displayName || cityName) && (
             <div className="dept-badge-row">
               <Building2 size={12} />
-              <span className="dept-badge" style={{ color: deptColor, background: deptColor + '15', borderColor: deptColor + '44' }}>
-                {displayName}
-              </span>
+              {displayName && (
+                <span className="dept-badge" style={{ color: deptColor, background: deptColor + '15', borderColor: deptColor + '44' }}>
+                  {displayName}
+                </span>
+              )}
+              {cityName && (
+                <span className="city-badge">{cityName}</span>
+              )}
             </div>
           )}
-          <p className="gov-sub">Review and verify civic reports for your department</p>
+          <p className="gov-sub">Review and verify civic reports for your jurisdiction</p>
         </div>
         <button className="gov-refresh-btn" onClick={load} disabled={loading}>
           <RefreshCw size={14} className={loading ? 'spin' : ''} /> Refresh
         </button>
       </div>
 
-      {/* No department notice */}
-      {noDepartment && (
+      {/* No department / no city notice */}
+      {isBlocked && (
         <div className="dept-no-dept-notice">
           <AlertTriangle size={16} />
           <span>{message}</span>
@@ -179,7 +188,7 @@ export default function AuthorityPage() {
       )}
 
       {/* Stats */}
-      {!noDepartment && (
+      {!isBlocked && (
         <div className="gov-stats-row">
           <div className="gov-stat">
             <span className="gov-stat-val text-warn">{pending.length}</span>
@@ -221,11 +230,17 @@ export default function AuthorityPage() {
           <p>Awaiting department assignment</p>
           <p style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>Contact your administrator to be assigned to a department</p>
         </div>
+      ) : noCity ? (
+        <div className="empty-state">
+          <Building2 size={36} style={{ color: 'var(--muted)' }} />
+          <p>Department assigned but no city set</p>
+          <p style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>Contact your administrator to assign your city jurisdiction</p>
+        </div>
       ) : current.length === 0 ? (
         <div className="empty-state">
           {activeTab === 'Rejected'
-            ? <><XCircle size={36} style={{ color: 'var(--muted)' }} /><p>No rejected reports — coming in Phase 14C</p></>
-            : <><CheckCircle2 size={36} style={{ color: 'var(--success)' }} /><p>No {activeTab.toLowerCase()} reports</p></>
+            ? <><XCircle size={36} style={{ color: 'var(--muted)' }} /><p>No rejected reports</p></>
+            : <><CheckCircle2 size={36} style={{ color: 'var(--success)' }} /><p>No {activeTab.toLowerCase()} reports in your jurisdiction</p></>
           }
         </div>
       ) : (

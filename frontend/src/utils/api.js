@@ -53,10 +53,12 @@ export const api = {
   workflowStart:   (id, note = '') => req(`/api/workflow/${id}/start`,   { method: 'POST', body: JSON.stringify({ note }) }),
   workflowResolve: (id, note = '') => req(`/api/workflow/${id}/resolve`, { method: 'POST', body: JSON.stringify({ note }) }),
 
-  // ── Phase 14 — Image Upload ───────────────────────────────────────────────
-  submitReport: (file) => {
+  // ── Phase 14 — Image Upload ─────────────────────────────────────────
+  submitReport: (file, city, address) => {
     const formData = new FormData();
-    formData.append('image', file);
+    formData.append('image',   file);
+    if (city)    formData.append('city',    city);    // Phase 14C
+    if (address) formData.append('address', address); // Phase 14C
     return req('/api/report/create', { method: 'POST', body: formData });
   },
 
@@ -70,7 +72,7 @@ export const api = {
   rbacRoles:  ()             => req('/api/rbac/roles'),
   rbacAssign: (body)         => req('/api/rbac/assign', { method: 'POST', body: JSON.stringify(body) }),
 
-  // ── Phase 14B — Department APIs ──────────────────────────────────────────
+  // ── Phase 14B — Department APIs ────────────────────────────────────
   departments:    ()     => req('/api/departments'),
   deptAnalytics:  ()     => req('/api/departments/analytics'),
   myDepartment:   ()     => req('/api/departments/me'),
@@ -78,8 +80,11 @@ export const api = {
   deptUsers:      ()     => req('/api/departments/users'),
   assignUserDept: (body) => req('/api/departments/assign-user', { method: 'POST', body: JSON.stringify(body) }),
 
-  // ── Phase 14B — Assignment APIs ───────────────────────────────────────────
+  // ── Phase 14B — Assignment APIs ─────────────────────────────────────
   assignments:      ()       => req('/api/assignments'),
   assignment:       (id)     => req(`/api/assignments/${id}`),
   manualAssign:     (body)   => req('/api/assignments/assign', { method: 'POST', body: JSON.stringify(body) }),
+
+  // ── Phase 14C — City APIs ───────────────────────────────────────────
+  cities: () => req('/api/cities'),
 };
