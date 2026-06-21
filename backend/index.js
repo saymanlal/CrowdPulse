@@ -125,30 +125,58 @@ async function scanReports() {
         if (!block) continue;
         const txs = block.transactions || block.data?.transactions || [];
         for (const tx of txs) {
+          // A report can reach the chain two ways:
+          //   • legacy raw REPORT_CREATE tx (kept for backward compat)
+          //   • CONTRACT_CALL to ReportRegistry.createReport (Phase 17) — the
+          //     report is now stored on-chain through the smart contract, so
+          //     the fields live in tx.data.args instead of tx.data.
+          let fields = null;
           if (tx.type === 'REPORT_CREATE' && tx.data) {
-            // Phase 14C: parse city from structured location JSON
-            let city = null;
-            try {
-              const loc = typeof tx.data.location === 'string'
-                ? JSON.parse(tx.data.location)
-                : tx.data.location;
-              city = loc?.city || null;
-            } catch { city = null; }
-
-            newReports.push({
-              id:          tx.id,
+            fields = {
               reporter:    tx.data.from,
-              category:    tx.data.category   || 'OTHER',
-              description: tx.data.description || '',
-              location:    tx.data.location   || '',
-              city,                                     // Phase 14C
-              severity:    tx.data.severity   || 'MEDIUM',
-              status:      'OPEN',
-              createdAt:   tx.timestamp,
-              blockIndex:  block.index ?? block.height ?? block.index,
-              txId:        tx.id,
-            });
+              category:    tx.data.category    || 'OTHER',
+              description: tx.data.description  || '',
+              location:    tx.data.location     || '',
+              severity:    tx.data.severity     || 'MEDIUM',
+            };
+          } else if (
+            tx.type === 'CONTRACT_CALL' && tx.data &&
+            tx.data.contract === CONTRACTS.ReportRegistry &&
+            tx.data.method === 'createReport'
+          ) {
+            const a = tx.data.args || {};
+            fields = {
+              reporter:    tx.data.from,
+              category:    a.category    || 'OTHER',
+              description: a.description  || '',
+              location:    a.location     || '',
+              severity:    a.severity     || 'MEDIUM',
+            };
           }
+          if (!fields) continue;
+
+          // Phase 14C: parse city from structured location JSON
+          let city = null;
+          try {
+            const loc = typeof fields.location === 'string'
+              ? JSON.parse(fields.location)
+              : fields.location;
+            city = loc?.city || null;
+          } catch { city = null; }
+
+          newReports.push({
+            id:          tx.id,
+            reporter:    fields.reporter,
+            category:    fields.category,
+            description: fields.description,
+            location:    fields.location,
+            city,                                     // Phase 14C
+            severity:    fields.severity,
+            status:      'OPEN',
+            createdAt:   tx.timestamp,
+            blockIndex:  block.index ?? block.height ?? block.index,
+            txId:        tx.id,
+          });
         }
       }
     }
@@ -283,6 +311,8 @@ app.post('/api/broadcast', async (req, res) => {
     let ai = null;
     if (tx.type === 'REPORT_CREATE')
       ai = aiVerify(tx.data?.description, tx.data?.category);
+    else if (tx.type === 'CONTRACT_CALL' && tx.data?.method === 'createReport')
+      ai = aiVerify(tx.data?.args?.description, tx.data?.args?.category);
     res.json({ success: true, txId: result.txId || result.id || null, result, ai });
   } catch (e) {
     console.error('broadcast error:', e.message);
@@ -392,6 +422,21 @@ app.get('/api/contracts', async (_req, res) => {
   try { res.json(await rpc('/api/contracts')); }
   catch (e) { res.status(500).json({ error: e.message, contracts: [] }); }
 });
+
+// ─── Serve built frontend (single-deploy mode) ────────────────────────────────
+// When frontend/dist exists (production build), serve it from this same service
+// so the API and UI share one origin — VITE_API_URL can stay blank. Skipped in
+// dev (no dist), where the Vite dev server proxies /api back here.
+const distDir = path.join(__dirname, '..', 'frontend', 'dist');
+if (fs.existsSync(distDir)) {
+  app.use(express.static(distDir));
+  // SPA fallback — any non-API GET returns index.html so client routing works.
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path === '/health') return next();
+    res.sendFile(path.join(distDir, 'index.html'));
+  });
+  console.log(`  Static → serving frontend/dist`);
+}
 
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
 app.use((err, _req, res, _next) => {
