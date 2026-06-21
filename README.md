@@ -1,4 +1,4 @@
-# — Decentralised Civic Intelligence on SAYMAN Blockchain
+# CivicChain — Decentralised Civic Intelligence on SAYMAN Blockchain
 
 > Report. Verify. Reward. On-chain.
 
